@@ -173,6 +173,23 @@ def test_existing_model_skips_train(tmp_path: Path):
     assert ("train_monthly.sh", "cb_batch_15") not in calls
 
 
+def test_base_env_includes_upstream_env_file_values(tmp_path: Path):
+    config = _base_config(tmp_path)
+    upstream_env = tmp_path / "upstream.env"
+    upstream_env.write_text("TUSHARE_TOKEN=secret\nPYTHON_BIN=/tmp/python\n", encoding="utf-8")
+    config = OrchestratorConfig(
+        **{**config.__dict__, "upstream_env_file": upstream_env}
+    )
+
+    from cb_orchestrator.orchestrator import _base_env
+
+    env = _base_env(config)
+
+    assert env["UPSTREAM_ENV_FILE"] == str(upstream_env)
+    assert env["TUSHARE_TOKEN"] == "secret"
+    assert env["PYTHON_BIN"] == "/tmp/python"
+
+
 def test_partial_upstream_state_stops_downstream(tmp_path: Path):
     config = _base_config(tmp_path)
     _write_json(config.upstream_state_file, {"exit_class": "success", "cb_status": "success", "qlib_status": "running", "target_trade_date": "2026-04-17"})

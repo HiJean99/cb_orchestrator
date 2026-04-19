@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from cb_orchestrator.calendar_utils import TradingCalendar
-from cb_orchestrator.config import OrchestratorConfig
+from cb_orchestrator.config import OrchestratorConfig, _read_env_file
 
 try:
     import fcntl
@@ -145,6 +145,7 @@ def _top_prediction_path(prediction_root: Path, strategy_id: str, trade_date: st
 def _base_env(config: OrchestratorConfig) -> dict[str, str]:
     env = dict(os.environ)
     if config.upstream_env_file and config.upstream_env_file.exists():
+        env.update(_read_env_file(config.upstream_env_file))
         env["UPSTREAM_ENV_FILE"] = str(config.upstream_env_file)
     return env
 
