@@ -109,7 +109,7 @@ class OrchestratorConfig:
             upstream_python_bin=_coalesce_path(
                 merged.get("UPSTREAM_PYTHON_BIN") or merged.get("PYTHON_BIN"),
                 default=Path("/home/hermes/workspace/CB-Qlib-Infra/.venv/bin/python"),
-            ).resolve(),
+            ),
             upstream_repo_root=_coalesce_path(
                 merged.get("UPSTREAM_REPO_ROOT"),
                 default=Path("/home/hermes/workspace/CB-Qlib-Infra"),

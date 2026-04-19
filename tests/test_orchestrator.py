@@ -116,6 +116,21 @@ def _fake_runner_factory(config: OrchestratorConfig, *, email_sent: bool = True)
     return calls, _runner
 
 
+def test_config_preserves_upstream_python_symlink(tmp_path: Path):
+    real_python = tmp_path / "real_python"
+    real_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    symlink_python = tmp_path / "venv_python"
+    symlink_python.symlink_to(real_python)
+    env_file = tmp_path / "cb-orchestrator.env"
+    env_file.write_text(
+        f"UPSTREAM_PYTHON_BIN={symlink_python}\nRUNTIME_REPO_ROOT={tmp_path / 'runtime'}\n",
+        encoding="utf-8",
+    )
+
+    config = OrchestratorConfig.from_sources(env_file=env_file, environ={})
+
+    assert config.upstream_python_bin == symlink_python
+
 def test_skip_non_trading_day(tmp_path: Path):
     config = _base_config(tmp_path)
     _write_json(config.upstream_state_file, {"exit_class": "non_trading_day", "cb_status": "skipped", "qlib_status": "skipped", "target_trade_date": None})
