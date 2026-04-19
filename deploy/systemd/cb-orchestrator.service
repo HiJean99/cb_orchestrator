@@ -1,0 +1,13 @@
+[Unit]
+Description=CB thin daily orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/cb-orchestrator
+EnvironmentFile=%h/.config/cb-orchestrator/cb-orchestrator.env
+ExecStart=%h/venvs/cb_orchestrator/bin/cb-orchestrator-daily --env-file %h/.config/cb-orchestrator/cb-orchestrator.env
+
+[Install]
+WantedBy=default.target

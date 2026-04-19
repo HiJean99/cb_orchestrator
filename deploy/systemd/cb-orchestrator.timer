@@ -1,0 +1,13 @@
+[Unit]
+Description=Run CB thin daily orchestrator
+
+[Timer]
+OnCalendar=*-*-* 17:30:00
+OnCalendar=*-*-* 18:30:00
+OnCalendar=*-*-* 20:30:00
+OnCalendar=*-*-* 22:30:00
+Persistent=true
+Unit=cb-orchestrator.service
+
+[Install]
+WantedBy=timers.target
