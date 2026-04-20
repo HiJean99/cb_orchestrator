@@ -5,6 +5,24 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _next_session_from_exchange_calendar(date_value: str) -> str | None:
+    try:
+        import pandas as pd
+        import exchange_calendars as xcals
+    except ImportError:
+        return None
+
+    start = pd.Timestamp(date_value)
+    end = start + pd.Timedelta(days=30)
+    calendar = xcals.get_calendar("XSHG")
+    sessions = calendar.sessions_in_range(start, end)
+    for session in sessions:
+        session_date = session.strftime("%Y-%m-%d")
+        if session_date > date_value:
+            return session_date
+    return None
+
+
 @dataclass(frozen=True)
 class TradingCalendar:
     dates: tuple[str, ...]
@@ -25,6 +43,9 @@ class TradingCalendar:
     def next_after(self, date_value: str) -> str:
         index = bisect_right(self.dates, date_value)
         if index >= len(self.dates):
+            fallback = _next_session_from_exchange_calendar(date_value)
+            if fallback:
+                return fallback
             raise ValueError(f"no next trading day after {date_value}")
         return self.dates[index]
 

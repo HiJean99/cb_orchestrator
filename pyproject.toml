@@ -18,7 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
 ]
-dependencies = []
+dependencies = ["exchange_calendars>=4.5"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
