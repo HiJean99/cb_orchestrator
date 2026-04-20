@@ -15,7 +15,11 @@ EMAIL_ENV_KEYS = (
     "EMAIL_FROM",
     "EMAIL_SUBJECT_PREFIX",
 )
-SECRET_ENV_KEYS = {"SMTP_PASSWORD", "TUSHARE_TOKEN"}
+SECRET_ENV_KEYS = {
+    "GITHUB_RELEASE_TOKEN",
+    "SMTP_PASSWORD",
+    "TUSHARE_TOKEN",
+}
 
 
 def _split_csv(raw_value: str | None, *, default: tuple[str, ...] = ()) -> tuple[str, ...]:
@@ -40,6 +44,17 @@ def _read_env_file(env_file: Path | None) -> dict[str, str]:
 
 def _coalesce_path(raw_value: str | None, *, default: Path) -> Path:
     return Path(raw_value).expanduser() if raw_value else default
+
+
+def _split_path_list(raw_value: str | None) -> tuple[Path, ...]:
+    if not raw_value:
+        return ()
+    parts = []
+    for item in raw_value.split(os.pathsep):
+        normalized = item.strip()
+        if normalized:
+            parts.append(Path(normalized).expanduser())
+    return tuple(parts)
 
 
 @dataclass(frozen=True)
@@ -67,6 +82,23 @@ class OrchestratorConfig:
     upstream_repair_trade_days: int
     upstream_allow_missing_symbols: str | None
     email_env: dict[str, str]
+    current_positions_json_path: Path
+    plan_output_root: Path
+    upstream_mode: str = "local_pipeline"
+    github_release_token: str | None = None
+    github_release_repo: str = "HiJean99/CB-Qlib-Infra"
+    github_release_tag: str = "cb-data-latest"
+    github_release_asset_name: str = "cb-qlib-data-latest.tar.zst"
+    release_install_dir: Path = Path("~/local_data/qlib_data")
+    release_work_dir: Path = Path("~/local_state/cb_orchestrator/release_tmp")
+    release_poll_interval_minutes: int = 15
+    release_window_end_hour: int = 4
+    runtime_python_bin: Path | None = None
+    runtime_pythonpath: tuple[Path, ...] = ()
+    runtime_train_bin: Path | None = None
+    runtime_predict_bin: Path | None = None
+    next_trade_top_n: int = 6
+    next_trade_max_drop: int = 3
 
     @classmethod
     def from_sources(
@@ -90,9 +122,14 @@ class OrchestratorConfig:
             merged.get("RUNTIME_REPO_ROOT"),
             default=Path("/home/hermes/cb_online_runtime"),
         ).resolve()
+        upstream_mode = (merged.get("UPSTREAM_MODE") or "local_pipeline").strip() or "local_pipeline"
+        release_install_dir = _coalesce_path(
+            merged.get("RELEASE_INSTALL_DIR"),
+            default=Path("~/local_data/qlib_data"),
+        ).resolve()
         provider_uri = _coalesce_path(
             merged.get("PROVIDER_URI") or merged.get("QLIB_DIR"),
-            default=Path("/home/hermes/workspace/cb-qlib-data/qlib_data"),
+            default=release_install_dir if upstream_mode == "github_release" else Path("/home/hermes/workspace/cb-qlib-data/qlib_data"),
         ).resolve()
         state_root = _coalesce_path(
             merged.get("ORCH_STATE_ROOT"),
@@ -156,11 +193,38 @@ class OrchestratorConfig:
             upstream_repair_trade_days=int(merged.get("UPSTREAM_REPAIR_TRADE_DAYS", "20")),
             upstream_allow_missing_symbols=merged.get("ALLOW_MISSING_SYMBOLS") or merged.get("UPSTREAM_ALLOW_MISSING_SYMBOLS"),
             email_env=email_env,
+            upstream_mode=upstream_mode,
+            github_release_token=merged.get("GITHUB_RELEASE_TOKEN"),
+            github_release_repo=merged.get("GITHUB_RELEASE_REPO", "HiJean99/CB-Qlib-Infra"),
+            github_release_tag=merged.get("GITHUB_RELEASE_TAG", "cb-data-latest"),
+            github_release_asset_name=merged.get("GITHUB_RELEASE_ASSET_NAME", "cb-qlib-data-latest.tar.zst"),
+            release_install_dir=release_install_dir,
+            release_work_dir=_coalesce_path(
+                merged.get("RELEASE_WORK_DIR"),
+                default=state_root / "release_tmp",
+            ).resolve(),
+            release_poll_interval_minutes=int(merged.get("RELEASE_POLL_INTERVAL_MINUTES", "15")),
+            release_window_end_hour=int(merged.get("RELEASE_WINDOW_END_HOUR", "4")),
+            current_positions_json_path=_coalesce_path(
+                merged.get("CURRENT_POSITIONS_JSON_PATH"),
+                default=state_root / "current_positions.json",
+            ).resolve(),
+            plan_output_root=_coalesce_path(
+                merged.get("PLAN_OUTPUT_ROOT"),
+                default=state_root / "next_trade_plans",
+            ).resolve(),
+            runtime_python_bin=Path(merged["RUNTIME_PYTHON_BIN"]).expanduser() if merged.get("RUNTIME_PYTHON_BIN") else None,
+            runtime_pythonpath=_split_path_list(merged.get("RUNTIME_PYTHONPATH")),
+            runtime_train_bin=Path(merged["RUNTIME_TRAIN_BIN"]).expanduser() if merged.get("RUNTIME_TRAIN_BIN") else None,
+            runtime_predict_bin=Path(merged["RUNTIME_PREDICT_BIN"]).expanduser() if merged.get("RUNTIME_PREDICT_BIN") else None,
+            next_trade_top_n=int(merged.get("NEXT_TRADE_TOP_N", "6")),
+            next_trade_max_drop=int(merged.get("NEXT_TRADE_MAX_DROP", "3")),
         )
 
     def redacted_dict(self) -> dict[str, object]:
         payload = asdict(self)
         payload["strategy_ids"] = list(self.strategy_ids)
+        payload["runtime_pythonpath"] = [str(path) for path in self.runtime_pythonpath]
         payload["email_env"] = {
             key: ("***" if key in SECRET_ENV_KEYS else value)
             for key, value in self.email_env.items()
@@ -168,4 +232,11 @@ class OrchestratorConfig:
         for key, value in list(payload.items()):
             if isinstance(value, Path):
                 payload[key] = str(value)
+            if isinstance(value, tuple) and value and all(isinstance(item, Path) for item in value):
+                payload[key] = [str(item) for item in value]
+            if isinstance(value, dict):
+                payload[key] = {
+                    nested_key: ("***" if nested_key in SECRET_ENV_KEYS else nested_value)
+                    for nested_key, nested_value in value.items()
+                }
         return payload
