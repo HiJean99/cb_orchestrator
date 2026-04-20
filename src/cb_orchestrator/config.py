@@ -230,6 +230,9 @@ class OrchestratorConfig:
             for key, value in self.email_env.items()
         }
         for key, value in list(payload.items()):
+            if key.upper() in SECRET_ENV_KEYS and value:
+                payload[key] = "***"
+                continue
             if isinstance(value, Path):
                 payload[key] = str(value)
             if isinstance(value, tuple) and value and all(isinstance(item, Path) for item in value):

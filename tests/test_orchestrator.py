@@ -145,6 +145,19 @@ def test_config_preserves_upstream_python_symlink(tmp_path: Path):
     assert config.next_trade_max_drop == 3
 
 
+def test_redacted_dict_masks_top_level_secrets(tmp_path: Path):
+    config = OrchestratorConfig(
+        **{
+            **_base_config(tmp_path).__dict__,
+            "github_release_token": "secret-token",
+        }
+    )
+
+    payload = config.redacted_dict()
+
+    assert payload["github_release_token"] == "***"
+
+
 def test_skip_non_trading_day(tmp_path: Path):
     config = _base_config(tmp_path)
     _write_json(config.upstream_state_file, {"exit_class": "non_trading_day", "cb_status": "skipped", "qlib_status": "skipped", "target_trade_date": None})
