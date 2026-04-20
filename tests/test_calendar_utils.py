@@ -11,7 +11,8 @@ def test_next_after_uses_exchange_calendar_fallback(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         calendar_utils,
         "_next_session_from_exchange_calendar",
-        lambda date_value: "2026-04-21" if date_value == "2026-04-20" else None,
+        lambda date_value: "2026-04-21" if date_value in {"2026-04-20", "20260420"} else None,
     )
 
     assert calendar.next_after("2026-04-20") == "2026-04-21"
+    assert calendar.next_after("20260420") == "2026-04-21"

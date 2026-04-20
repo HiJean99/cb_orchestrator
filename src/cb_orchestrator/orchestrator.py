@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from cb_orchestrator.calendar_utils import TradingCalendar
+from cb_orchestrator.calendar_utils import TradingCalendar, normalize_date_value
 from cb_orchestrator.config import OrchestratorConfig, _read_env_file
 from cb_orchestrator.release_consumer import (
     GitHubReleaseError,
@@ -511,7 +511,7 @@ def orchestrate_daily(
             if not ready:
                 return finalize(status, message)
 
-            signal_date = str(upstream_state["target_trade_date"])
+            signal_date = normalize_date_value(str(upstream_state["target_trade_date"]))
             calendar = TradingCalendar.from_path(config.trade_calendar_path or (config.provider_uri / "calendars" / "day.txt"))
             trade_date = calendar.next_after(signal_date)
             try:
