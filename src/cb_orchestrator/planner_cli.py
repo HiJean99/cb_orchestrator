@@ -9,7 +9,9 @@ from cb_orchestrator.planner import plan_next_trade
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build the next-trade plan from the latest successful run and local holdings.json.")
+    parser = argparse.ArgumentParser(
+        description="Build the next-trade plan from the latest successful run and signal_date snapshot bundle."
+    )
     parser.add_argument("--env-file", default=None, help="orchestrator env file path")
     parser.add_argument("--run-id", default=None, help="specific orchestrator run_id to plan from")
     parser.add_argument("--trade-date", default=None, help="resolve the latest successful run by trade_date")

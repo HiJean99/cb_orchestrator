@@ -71,7 +71,7 @@ def _base_config(tmp_path: Path) -> OrchestratorConfig:
         upstream_repair_trade_days=20,
         upstream_allow_missing_symbols="",
         email_env={},
-        current_positions_json_path=state_root / "current_positions.json",
+        plan_input_root=state_root / "plan_inputs",
         plan_output_root=state_root / "next_trade_plans",
     )
 
@@ -128,7 +128,7 @@ def test_config_preserves_upstream_python_symlink(tmp_path: Path):
         (
             f"UPSTREAM_PYTHON_BIN={symlink_python}\n"
             f"RUNTIME_REPO_ROOT={tmp_path / 'runtime'}\n"
-            f"CURRENT_POSITIONS_JSON_PATH={tmp_path / 'holdings.json'}\n"
+            f"PLAN_INPUT_ROOT={tmp_path / 'plan_inputs'}\n"
             f"PLAN_OUTPUT_ROOT={tmp_path / 'plans'}\n"
             "NEXT_TRADE_TOP_N=6\n"
             "NEXT_TRADE_MAX_DROP=3\n"
@@ -139,7 +139,7 @@ def test_config_preserves_upstream_python_symlink(tmp_path: Path):
     config = OrchestratorConfig.from_sources(env_file=env_file, environ={})
 
     assert config.upstream_python_bin == symlink_python
-    assert config.current_positions_json_path == tmp_path / "holdings.json"
+    assert config.plan_input_root == tmp_path / "plan_inputs"
     assert config.plan_output_root == tmp_path / "plans"
     assert config.next_trade_top_n == 6
     assert config.next_trade_max_drop == 3

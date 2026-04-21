@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from cb_orchestrator.config import OrchestratorConfig
-from cb_orchestrator.planner import build_next_trade_plan, load_current_positions, plan_next_trade
+from cb_orchestrator.planner import (
+    build_next_trade_plan,
+    load_holdings_snapshot,
+    load_ranking_snapshot,
+    plan_next_trade,
+)
 
 
 def _write(path: Path, content: str) -> None:
@@ -51,50 +56,27 @@ def _base_config(tmp_path: Path) -> OrchestratorConfig:
         upstream_repair_trade_days=20,
         upstream_allow_missing_symbols="",
         email_env={},
-        current_positions_json_path=state_root / "current_positions.json",
+        plan_input_root=state_root / "plan_inputs",
         plan_output_root=state_root / "next_trade_plans",
         next_trade_top_n=6,
         next_trade_max_drop=3,
     )
 
 
-def _seed_success_run(config: OrchestratorConfig, *, trade_date: str = "2026-04-20", run_id: str = "20260420_083000", with_next_positions: bool = True) -> str:
+def _seed_success_run(
+    config: OrchestratorConfig,
+    *,
+    signal_date: str = "2026-04-17",
+    trade_date: str = "2026-04-20",
+    run_id: str = "20260420_083000",
+) -> str:
     payload = {
         "run_id": run_id,
-        "signal_date": "2026-04-17",
+        "signal_date": signal_date,
         "trade_date": trade_date,
         "status": "success",
         "strategies": [],
     }
-    datasets = {
-        "cb_batch_15": "instrument,rank,score\nA,1,0.91\nB,2,0.85\nC,3,0.84\nD,4,0.82\n",
-        "cb_batch_27": "instrument,rank,score\nA,1,0.88\nE,5,0.78\nF,6,0.76\nG,7,0.72\n",
-    }
-    for strategy_id, current_csv in datasets.items():
-        current_dir = config.prediction_root / strategy_id / trade_date
-        top_path = current_dir / "top10.csv"
-        next_path = current_dir / "next_positions.csv"
-        prediction_summary_path = current_dir / "prediction_summary.json"
-
-        _write(top_path, current_csv)
-        if with_next_positions:
-            _write(next_path, current_csv)
-        _write_json(
-            prediction_summary_path,
-            {
-                "top_prediction_path": str(top_path),
-                "next_positions_path": str(next_path) if with_next_positions else str(current_dir / "missing_next_positions.csv"),
-            },
-        )
-        payload["strategies"].append(
-            {
-                "strategy_id": strategy_id,
-                "status": "success",
-                "top_prediction_path": str(top_path),
-                "prediction_summary_path": str(prediction_summary_path),
-            }
-        )
-
     latest_path = config.state_root / "latest.json"
     run_path = config.state_root / "runs" / f"{run_id}.json"
     _write_json(latest_path, payload)
@@ -102,28 +84,84 @@ def _seed_success_run(config: OrchestratorConfig, *, trade_date: str = "2026-04-
     return run_id
 
 
-def _seed_holdings(config: OrchestratorConfig, positions: list[dict[str, object]], *, snapshot_at: str = "2026-04-20T15:00:00+08:00") -> None:
+def _make_ranked_entries(instruments: tuple[str, ...]) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    for index, instrument in enumerate(instruments, start=1):
+        entries.append(
+            {
+                "instrument": instrument,
+                "display_rank": index,
+                "final_score": round(1.0 - index * 0.01, 6),
+                "source_strategies": ["cb_batch_15", "cb_batch_27"],
+                "source_scores": {
+                    "cb_batch_15": round(1.0 - index * 0.01, 6),
+                    "cb_batch_27": round(0.9 - index * 0.01, 6),
+                },
+            }
+        )
+    return entries
+
+
+def _seed_plan_inputs(
+    config: OrchestratorConfig,
+    *,
+    signal_date: str,
+    run_id: str,
+    positions: list[dict[str, object]],
+    ranked_entries: list[dict[str, object]] | None = None,
+    parse_status: str = "parsed",
+    confirmed_at: str | None = None,
+    holdings_signal_date: str | None = None,
+    ranking_signal_date: str | None = None,
+    ranking_run_id: str | None = None,
+) -> None:
+    ranked_entries = ranked_entries or _make_ranked_entries(("A", "B", "C", "D", "E", "F", "G"))
+    bundle_dir = config.plan_input_root / signal_date
+
     _write_json(
-        config.current_positions_json_path,
+        bundle_dir / "holdings_snapshot.json",
         {
-            "snapshot_at": snapshot_at,
+            "signal_date": holdings_signal_date or signal_date,
+            "snapshot_key": f"holding-{signal_date}",
+            "parse_status": parse_status,
+            "submitted_at": f"{signal_date}T15:00:00+08:00",
+            "parsed_at": f"{signal_date}T15:01:00+08:00",
+            "confirmed_at": confirmed_at,
             "positions": positions,
+        },
+    )
+    _write_json(
+        bundle_dir / "ranking_snapshot.json",
+        {
+            "signal_date": ranking_signal_date or signal_date,
+            "run_id": ranking_run_id or run_id,
+            "ranking_snapshot_key": f"ranking-{signal_date}",
+            "policy_name": "ensemble_daily",
+            "generated_at": f"{signal_date}T20:00:00+08:00",
+            "ranked_universe_count": len(ranked_entries),
+            "ranked_entries": ranked_entries,
         },
     )
 
 
-def test_plan_next_trade_bootstrap_outputs_top6(tmp_path: Path):
+def test_plan_next_trade_bootstrap_outputs_top6_from_snapshot_bundle(tmp_path: Path):
     config = _base_config(tmp_path)
     run_id = _seed_success_run(config)
-    _seed_holdings(config, [])
+    _seed_plan_inputs(config, signal_date="2026-04-17", run_id=run_id, positions=[])
 
     summary = plan_next_trade(config)
 
     assert summary["run_id"] == run_id
     assert summary["bootstrap"] is True
-    assert summary["buy_count"] == 6
+    assert summary["target_n"] == 6
+    assert summary["max_drop"] == 3
+    assert summary["holdings_snapshot_ref"] == "holding-2026-04-17"
+    assert summary["ranking_snapshot_ref"] == "ranking-2026-04-17"
+    assert summary["holdings_confirmed_at"] is None
     assert [item["instrument"] for item in summary["orders"]] == ["A", "B", "C", "D", "E", "F"]
     assert all(item["strategy_action"] == "buy" for item in summary["orders"])
+    assert summary["orders"][0]["source_strategies"] == "cb_batch_15,cb_batch_27"
+    assert "cb_batch_15=" in summary["orders"][0]["source_scores"]
     assert Path(summary["json_path"]).exists()
     assert Path(summary["csv_path"]).exists()
     assert Path(summary["html_path"]).exists()
@@ -139,9 +177,13 @@ def test_build_next_trade_plan_respects_top6_drop3_with_actual_holdings():
         signal_date="2026-04-20",
         trade_date="2026-04-21",
         source_run_path="/tmp/run.json",
-        current_positions_path=Path("/tmp/holdings.json"),
-        current_positions_snapshot_at="2026-04-20T15:00:00+08:00",
+        holdings_snapshot_ref="holding-2026-04-20",
+        holdings_snapshot_path=Path("/tmp/plan_inputs/2026-04-20/holdings_snapshot.json"),
+        holdings_confirmed_at=None,
+        ranking_snapshot_ref="ranking-2026-04-20",
+        ranking_snapshot_path=Path("/tmp/plan_inputs/2026-04-20/ranking_snapshot.json"),
         ranked_orders=ranked_orders,
+        ranked_universe_count=len(ranked_orders),
         current_positions={
             "A": 100.0,
             "B": 100.0,
@@ -157,6 +199,8 @@ def test_build_next_trade_plan_respects_top6_drop3_with_actual_holdings():
 
     assert payload["bootstrap"] is False
     assert payload["current_positions_count"] == 6
+    assert payload["holdings_snapshot_ref"] == "holding-2026-04-20"
+    assert payload["ranking_snapshot_ref"] == "ranking-2026-04-20"
     assert {code for code, item in by_instrument.items() if item["strategy_action"] == "sell"} == {"H", "I", "J"}
     assert by_instrument["G"]["strategy_action"] == "watch"
     assert by_instrument["G"]["strategy_reason"] == "deferred_drop"
@@ -167,12 +211,14 @@ def test_build_next_trade_plan_respects_top6_drop3_with_actual_holdings():
     assert by_instrument["B"]["strategy_action"] == "hold"
 
 
-def test_load_current_positions_sums_duplicates_and_ignores_zero(tmp_path: Path):
-    positions_path = tmp_path / "holdings.json"
+def test_load_holdings_snapshot_sums_duplicates_and_ignores_zero(tmp_path: Path):
+    snapshot_path = tmp_path / "holdings_snapshot.json"
     _write_json(
-        positions_path,
+        snapshot_path,
         {
-            "snapshot_at": "2026-04-20T15:00:00+08:00",
+            "signal_date": "2026-04-20",
+            "snapshot_key": "holding-2026-04-20",
+            "parse_status": "parsed",
             "positions": [
                 {"instrument": "a", "holding_qty": 100},
                 {"instrument": "A", "holding_qty": 20},
@@ -182,23 +228,49 @@ def test_load_current_positions_sums_duplicates_and_ignores_zero(tmp_path: Path)
         },
     )
 
-    payload = load_current_positions(positions_path)
+    payload = load_holdings_snapshot(snapshot_path)
 
     assert payload["positions"] == {"A": 120.0, "C": 50.0}
 
 
-def test_plan_next_trade_falls_back_to_top_csv_when_next_positions_missing(tmp_path: Path):
-    config = _base_config(tmp_path)
-    _seed_success_run(config, with_next_positions=False)
-    _seed_holdings(config, [])
+def test_load_ranking_snapshot_normalizes_complete_ranked_entries(tmp_path: Path):
+    snapshot_path = tmp_path / "ranking_snapshot.json"
+    _write_json(
+        snapshot_path,
+        {
+            "signal_date": "2026-04-20",
+            "run_id": "20260420_083000",
+            "ranking_snapshot_key": "ranking-2026-04-20",
+            "policy_name": "ensemble_daily",
+            "generated_at": "2026-04-20T20:00:00+08:00",
+            "ranked_universe_count": 2,
+            "ranked_entries": [
+                {
+                    "instrument": "a",
+                    "display_rank": 1,
+                    "final_score": 0.95,
+                    "source_strategies": ["cb_batch_15", "cb_batch_27"],
+                    "source_scores": {"cb_batch_15": 0.95, "cb_batch_27": 0.85},
+                },
+                {
+                    "instrument": "B",
+                    "display_rank": 2,
+                    "final_score": 0.9,
+                    "source_strategies": "cb_batch_15",
+                    "source_scores": "cb_batch_15=0.9",
+                },
+            ],
+        },
+    )
 
-    summary = plan_next_trade(config)
+    payload = load_ranking_snapshot(snapshot_path)
 
-    assert summary["bootstrap"] is True
-    assert [item["instrument"] for item in summary["orders"]][:3] == ["A", "B", "C"]
+    assert payload["ranked_orders"][0]["instrument"] == "A"
+    assert payload["ranked_orders"][0]["source_strategies"] == "cb_batch_15,cb_batch_27"
+    assert payload["ranked_orders"][0]["source_scores"] == "cb_batch_15=0.95;cb_batch_27=0.85"
 
 
-def test_plan_next_trade_missing_holdings_file_fails(tmp_path: Path):
+def test_plan_next_trade_missing_holdings_snapshot_fails(tmp_path: Path):
     config = _base_config(tmp_path)
     _seed_success_run(config)
 
@@ -208,18 +280,78 @@ def test_plan_next_trade_missing_holdings_file_fails(tmp_path: Path):
 
 def test_plan_next_trade_resolves_run_by_trade_date(tmp_path: Path):
     config = _base_config(tmp_path)
-    _seed_success_run(config, trade_date="2026-04-18", run_id="20260418_083000")
-    expected_run_id = _seed_success_run(config, trade_date="2026-04-20", run_id="20260420_083000")
-    _seed_holdings(config, [])
+    _seed_success_run(config, signal_date="2026-04-15", trade_date="2026-04-18", run_id="20260418_083000")
+    expected_run_id = _seed_success_run(config, signal_date="2026-04-17", trade_date="2026-04-20", run_id="20260420_083000")
+    _seed_plan_inputs(config, signal_date="2026-04-17", run_id=expected_run_id, positions=[])
 
     summary = plan_next_trade(config, trade_date="2026-04-20")
 
     assert summary["run_id"] == expected_run_id
 
 
-def test_load_current_positions_rejects_invalid_payload(tmp_path: Path):
-    positions_path = tmp_path / "holdings.json"
-    _write_json(positions_path, {"snapshot_at": "2026-04-20T15:00:00+08:00"})
+def test_plan_next_trade_allows_unconfirmed_holdings_snapshot(tmp_path: Path):
+    config = _base_config(tmp_path)
+    run_id = _seed_success_run(config)
+    _seed_plan_inputs(config, signal_date="2026-04-17", run_id=run_id, positions=[], confirmed_at=None, parse_status="parsed")
+
+    summary = plan_next_trade(config)
+
+    assert summary["holdings_confirmed_at"] is None
+    assert summary["bootstrap"] is True
+
+
+def test_load_holdings_snapshot_rejects_invalid_payload(tmp_path: Path):
+    snapshot_path = tmp_path / "holdings_snapshot.json"
+    _write_json(snapshot_path, {"signal_date": "2026-04-20", "snapshot_key": "holding-2026-04-20", "parse_status": "parsed"})
 
     with pytest.raises(ValueError):
-        load_current_positions(positions_path)
+        load_holdings_snapshot(snapshot_path)
+
+
+def test_load_ranking_snapshot_rejects_partial_payload(tmp_path: Path):
+    snapshot_path = tmp_path / "ranking_snapshot.json"
+    _write_json(
+        snapshot_path,
+        {
+            "signal_date": "2026-04-20",
+            "run_id": "20260420_083000",
+            "ranking_snapshot_key": "ranking-2026-04-20",
+            "policy_name": "ensemble_daily",
+            "generated_at": "2026-04-20T20:00:00+08:00",
+            "ranked_universe_count": 3,
+            "ranked_entries": _make_ranked_entries(("A", "B")),
+        },
+    )
+
+    with pytest.raises(ValueError):
+        load_ranking_snapshot(snapshot_path)
+
+
+def test_plan_next_trade_rejects_signal_date_mismatch(tmp_path: Path):
+    config = _base_config(tmp_path)
+    run_id = _seed_success_run(config)
+    _seed_plan_inputs(
+        config,
+        signal_date="2026-04-17",
+        run_id=run_id,
+        positions=[],
+        holdings_signal_date="2026-04-18",
+    )
+
+    with pytest.raises(ValueError):
+        plan_next_trade(config)
+
+
+def test_plan_next_trade_rejects_ranking_run_id_mismatch(tmp_path: Path):
+    config = _base_config(tmp_path)
+    run_id = _seed_success_run(config)
+    _seed_plan_inputs(
+        config,
+        signal_date="2026-04-17",
+        run_id=run_id,
+        positions=[],
+        ranking_run_id="20260420_999999",
+    )
+
+    with pytest.raises(ValueError):
+        plan_next_trade(config)

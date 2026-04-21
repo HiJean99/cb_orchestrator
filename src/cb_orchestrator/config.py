@@ -82,7 +82,7 @@ class OrchestratorConfig:
     upstream_repair_trade_days: int
     upstream_allow_missing_symbols: str | None
     email_env: dict[str, str]
-    current_positions_json_path: Path
+    plan_input_root: Path
     plan_output_root: Path
     upstream_mode: str = "local_pipeline"
     github_release_token: str | None = None
@@ -205,9 +205,9 @@ class OrchestratorConfig:
             ).resolve(),
             release_poll_interval_minutes=int(merged.get("RELEASE_POLL_INTERVAL_MINUTES", "15")),
             release_window_end_hour=int(merged.get("RELEASE_WINDOW_END_HOUR", "4")),
-            current_positions_json_path=_coalesce_path(
-                merged.get("CURRENT_POSITIONS_JSON_PATH"),
-                default=state_root / "current_positions.json",
+            plan_input_root=_coalesce_path(
+                merged.get("PLAN_INPUT_ROOT"),
+                default=state_root / "plan_inputs",
             ).resolve(),
             plan_output_root=_coalesce_path(
                 merged.get("PLAN_OUTPUT_ROOT"),

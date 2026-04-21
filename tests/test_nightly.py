@@ -50,7 +50,7 @@ def _base_config(tmp_path: Path) -> OrchestratorConfig:
         upstream_repair_trade_days=20,
         upstream_allow_missing_symbols="",
         email_env={},
-        current_positions_json_path=state_root / "current_positions.json",
+        plan_input_root=state_root / "plan_inputs",
         plan_output_root=state_root / "next_trade_plans",
         upstream_mode="github_release",
         github_release_token="token",
