@@ -40,13 +40,13 @@
 
 - `cb-orchestrator-daily` 的上游状态承接、训练、预测和 run summary 落盘
 - `cb-orchestrator-plan-next-trade` 基于 `PLAN_INPUT_ROOT/<signal_date>/` 下的结构化快照 bundle 生成计划
+- `cb-orchestrator-sync-notion` 把 holdings / rankings / plans 同步到既有 Notion 6 张库
 - `next_trade_plan.json/csv/html` 这三份本地产物
 
 目前还没有接入的是：
 
 - iPhone 快捷指令上传 OCR 文本
 - `do-sgp` 侧的快照写入和归档
-- Notion 的持仓/排名/计划同步
 - OCR 文本解析和人工修正回写
 
 ## 下一交易日计划
@@ -69,7 +69,6 @@
 
 - OCR 文本解析
 - `do-sgp` 快照生产
-- Notion 同步
 - Lark / 飞书同步
 - 本地 SQLite 审计账本
 - accepted / submitted / filled 人工反馈流
@@ -189,6 +188,12 @@ cb-orchestrator-daily --env-file ~/.config/cb-orchestrator/cb-orchestrator.env
 
 ```bash
 cb-orchestrator-plan-next-trade --env-file ~/.config/cb-orchestrator/cb-orchestrator.env
+```
+
+把某次 run 的 holdings / rankings / plan 同步到 Notion：
+
+```bash
+cb-orchestrator-sync-notion --env-file ~/.config/cb-orchestrator/cb-orchestrator.env --run-id 20260420_083000
 ```
 
 也可以显式指定某次运行：

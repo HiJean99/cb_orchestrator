@@ -17,6 +17,7 @@ EMAIL_ENV_KEYS = (
 )
 SECRET_ENV_KEYS = {
     "GITHUB_RELEASE_TOKEN",
+    "NOTION_TOKEN",
     "SMTP_PASSWORD",
     "TUSHARE_TOKEN",
 }
@@ -99,6 +100,15 @@ class OrchestratorConfig:
     runtime_predict_bin: Path | None = None
     next_trade_top_n: int = 6
     next_trade_max_drop: int = 3
+    notion_token: str | None = None
+    notion_version: str = "2022-06-28"
+    notion_daily_holdings_db_id: str | None = None
+    notion_holding_positions_db_id: str | None = None
+    notion_daily_rankings_db_id: str | None = None
+    notion_ranking_focus_db_id: str | None = None
+    notion_daily_plans_db_id: str | None = None
+    notion_plan_orders_db_id: str | None = None
+    notion_focus_top_k: int = 20
 
     @classmethod
     def from_sources(
@@ -219,6 +229,15 @@ class OrchestratorConfig:
             runtime_predict_bin=Path(merged["RUNTIME_PREDICT_BIN"]).expanduser() if merged.get("RUNTIME_PREDICT_BIN") else None,
             next_trade_top_n=int(merged.get("NEXT_TRADE_TOP_N", "6")),
             next_trade_max_drop=int(merged.get("NEXT_TRADE_MAX_DROP", "3")),
+            notion_token=merged.get("NOTION_TOKEN"),
+            notion_version=merged.get("NOTION_VERSION", "2022-06-28"),
+            notion_daily_holdings_db_id=merged.get("NOTION_DAILY_HOLDINGS_DB_ID"),
+            notion_holding_positions_db_id=merged.get("NOTION_HOLDING_POSITIONS_DB_ID"),
+            notion_daily_rankings_db_id=merged.get("NOTION_DAILY_RANKINGS_DB_ID"),
+            notion_ranking_focus_db_id=merged.get("NOTION_RANKING_FOCUS_DB_ID"),
+            notion_daily_plans_db_id=merged.get("NOTION_DAILY_PLANS_DB_ID"),
+            notion_plan_orders_db_id=merged.get("NOTION_PLAN_ORDERS_DB_ID"),
+            notion_focus_top_k=int(merged.get("NOTION_FOCUS_TOP_K", "20")),
         )
 
     def redacted_dict(self) -> dict[str, object]:
@@ -243,3 +262,14 @@ class OrchestratorConfig:
                     for nested_key, nested_value in value.items()
                 }
         return payload
+
+    def notion_sync_enabled(self) -> bool:
+        return bool(
+            self.notion_token
+            and self.notion_daily_holdings_db_id
+            and self.notion_holding_positions_db_id
+            and self.notion_daily_rankings_db_id
+            and self.notion_ranking_focus_db_id
+            and self.notion_daily_plans_db_id
+            and self.notion_plan_orders_db_id
+        )

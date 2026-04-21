@@ -27,6 +27,7 @@ dev = ["pytest>=8.0"]
 cb-orchestrator-daily = "cb_orchestrator.cli:main"
 cb-orchestrator-nightly-release = "cb_orchestrator.nightly_cli:main"
 cb-orchestrator-plan-next-trade = "cb_orchestrator.planner_cli:main"
+cb-orchestrator-sync-notion = "cb_orchestrator.notion_sync_cli:main"
 
 [tool.pytest.ini_options]
 addopts = "-q"
