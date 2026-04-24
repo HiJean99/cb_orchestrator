@@ -1,0 +1,36 @@
+{
+  "signal_date": "2026-04-21",
+  "snapshot_key": "holding-2026-04-21-manual-check",
+  "parse_status": "confirmed",
+  "source_type": "iphone_ocr_text",
+  "submitted_at": "2026-04-21T15:00:00+08:00",
+  "parsed_at": "2026-04-21T15:01:00+08:00",
+  "confirmed_at": "2026-04-21T15:05:00+08:00",
+  "raw_ocr_text": "华阳转债 SZ128125 持仓\n家悦转债 SH113584 持仓\n绿动转债 SZ128134 持仓\n万孚转债 SZ123064 持仓\n冀东转债 SZ127025 持仓\n万青转债 SZ127017 持仓\n",
+  "positions": [
+    {
+      "instrument": "SZ128125",
+      "holding_qty": 100
+    },
+    {
+      "instrument": "SH113584",
+      "holding_qty": 100
+    },
+    {
+      "instrument": "SZ128134",
+      "holding_qty": 100
+    },
+    {
+      "instrument": "SZ123064",
+      "holding_qty": 100
+    },
+    {
+      "instrument": "SZ127025",
+      "holding_qty": 100
+    },
+    {
+      "instrument": "SZ127017",
+      "holding_qty": 100
+    }
+  ]
+}

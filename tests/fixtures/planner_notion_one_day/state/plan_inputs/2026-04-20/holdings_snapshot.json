@@ -1,0 +1,36 @@
+{
+  "signal_date": "2026-04-20",
+  "snapshot_key": "holding-2026-04-20-manual-check",
+  "parse_status": "confirmed",
+  "source_type": "iphone_ocr_text",
+  "submitted_at": "2026-04-20T15:00:00+08:00",
+  "parsed_at": "2026-04-20T15:01:00+08:00",
+  "confirmed_at": "2026-04-20T15:05:00+08:00",
+  "raw_ocr_text": "华阳转债 SZ128125 持仓\n家悦转债 SH113584 持仓\n绿动转债 SZ128134 持仓\n航宇转债 SH118057 持仓\n天壕转债 SZ123092 持仓\n恒逸转2 SZ127067 持仓\n",
+  "positions": [
+    {
+      "instrument": "SZ128125",
+      "holding_qty": 100
+    },
+    {
+      "instrument": "SH113584",
+      "holding_qty": 100
+    },
+    {
+      "instrument": "SZ128134",
+      "holding_qty": 100
+    },
+    {
+      "instrument": "SH118057",
+      "holding_qty": 100
+    },
+    {
+      "instrument": "SZ123092",
+      "holding_qty": 100
+    },
+    {
+      "instrument": "SZ127067",
+      "holding_qty": 100
+    }
+  ]
+}

@@ -40,7 +40,7 @@
 
 - `cb-orchestrator-daily` 的上游状态承接、训练、预测和 run summary 落盘
 - `cb-orchestrator-plan-next-trade` 基于 `PLAN_INPUT_ROOT/<signal_date>/` 下的结构化快照 bundle 生成计划
-- `cb-orchestrator-sync-notion` 把 holdings / rankings / plans 同步到既有 Notion 6 张库
+- `cb-orchestrator-sync-notion` 把 holdings / rankings / decision days / plan orders 同步到 Notion V2 工作区
 - `next_trade_plan.json/csv/html` 这三份本地产物
 
 目前还没有接入的是：

@@ -29,11 +29,10 @@ class NotionSyncError(RuntimeError):
 
 @dataclass(frozen=True)
 class NotionResources:
-    daily_holdings_db_id: str
+    holdings_snapshots_db_id: str
     holding_positions_db_id: str
     daily_rankings_db_id: str
-    ranking_focus_db_id: str
-    daily_plans_db_id: str
+    decision_days_db_id: str
     plan_orders_db_id: str
 
     @classmethod
@@ -41,11 +40,10 @@ class NotionResources:
         if not config.notion_sync_enabled():
             raise NotionSyncError("notion sync is not configured: missing token or database ids")
         return cls(
-            daily_holdings_db_id=str(config.notion_daily_holdings_db_id),
+            holdings_snapshots_db_id=str(config.notion_daily_holdings_db_id),
             holding_positions_db_id=str(config.notion_holding_positions_db_id),
             daily_rankings_db_id=str(config.notion_daily_rankings_db_id),
-            ranking_focus_db_id=str(config.notion_ranking_focus_db_id),
-            daily_plans_db_id=str(config.notion_daily_plans_db_id),
+            decision_days_db_id=str(config.notion_decision_days_db_id),
             plan_orders_db_id=str(config.notion_plan_orders_db_id),
         )
 
@@ -155,6 +153,12 @@ class NotionClient:
     def append_block_children(self, block_id: str, children: list[dict[str, Any]]) -> dict[str, Any]:
         return self._request("PATCH", f"/blocks/{block_id}/children", {"children": children})
 
+    def update_block(self, block_id: str, *, archived: bool | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if archived is not None:
+            payload["archived"] = archived
+        return self._request("PATCH", f"/blocks/{block_id}", payload)
+
 
 def sync_run_to_notion(
     config: OrchestratorConfig,
@@ -174,16 +178,19 @@ def sync_run_to_notion(
     signal_date = _require_text(summary, "signal_date", label="run summary")
     resolved_trade_date = _require_text(summary, "trade_date", label="run summary")
     holdings_path, ranking_path = plan_input_paths(config, signal_date)
+
     raw_holdings = _load_json_object(holdings_path)
     raw_ranking = _load_json_object(ranking_path)
     holdings = load_holdings_snapshot(holdings_path)
     ranking = load_ranking_snapshot(ranking_path)
     ranking_csv_path = _write_ranking_snapshot_csv(ranking_path, raw_ranking)
     plan = _load_or_build_plan(config, run_id=resolved_run_id, trade_date=resolved_trade_date)
+    previous_rank_map = _load_previous_rank_map(config, signal_date)
+    bond_name_map = _load_bond_name_map(config)
 
-    holding_page = _sync_daily_holdings(
+    holding_page = _sync_holdings_snapshot(
         client=notion_client,
-        database_id=resources.daily_holdings_db_id,
+        database_id=resources.holdings_snapshots_db_id,
         raw_snapshot=raw_holdings,
         normalized_snapshot=holdings,
         snapshot_path=holdings_path,
@@ -194,7 +201,6 @@ def sync_run_to_notion(
         holding_page_id=holding_page["id"],
         normalized_snapshot=holdings,
     )
-
     ranking_page = _sync_daily_rankings(
         client=notion_client,
         database_id=resources.daily_rankings_db_id,
@@ -204,29 +210,45 @@ def sync_run_to_notion(
         source_run_path=str(summary.get("source_run_path") or ""),
         holding_page_id=holding_page["id"],
         top_n=config.next_trade_top_n,
+        bond_name_map=bond_name_map,
     )
-    focus_result = _sync_ranking_focus(
+    decision_day_page = _sync_decision_day(
         client=notion_client,
-        database_id=resources.ranking_focus_db_id,
-        ranking_page_id=ranking_page["id"],
-        ranking_snapshot=raw_ranking,
-        current_positions=holdings["positions"],
-        top_n=config.next_trade_top_n,
-        focus_top_k=config.notion_focus_top_k,
-    )
-
-    plan_page = _sync_daily_plan(
-        client=notion_client,
-        database_id=resources.daily_plans_db_id,
+        database_id=resources.decision_days_db_id,
         plan=plan,
+        holdings_snapshot=holdings,
+        ranking_snapshot=raw_ranking,
         holding_page_id=holding_page["id"],
         ranking_page_id=ranking_page["id"],
+        bond_name_map=bond_name_map,
+    )
+    _link_page_to_decision_day(
+        client=notion_client,
+        page_id=holding_page["id"],
+        decision_day_page_id=decision_day_page["id"],
+    )
+    _link_page_to_decision_day(
+        client=notion_client,
+        page_id=ranking_page["id"],
+        decision_day_page_id=decision_day_page["id"],
     )
     orders_result = _sync_plan_orders(
         client=notion_client,
         database_id=resources.plan_orders_db_id,
-        plan_page_id=plan_page["id"],
+        decision_day_page_id=decision_day_page["id"],
         plan=plan,
+        previous_rank_map=previous_rank_map,
+        bond_name_map=bond_name_map,
+    )
+    decision_latest_updates = _sync_is_latest_flag(
+        client=notion_client,
+        database_id=resources.decision_days_db_id,
+        signal_date=signal_date,
+    )
+    order_latest_updates = _sync_is_latest_flag(
+        client=notion_client,
+        database_id=resources.plan_orders_db_id,
+        signal_date=signal_date,
     )
 
     return {
@@ -243,18 +265,17 @@ def sync_run_to_notion(
             "positions_updated": position_result["updated"],
             "positions_archived": position_result["archived"],
             "ranking_page_id": ranking_page["id"],
-            "focus_created": focus_result["created"],
-            "focus_updated": focus_result["updated"],
-            "focus_archived": focus_result["archived"],
-            "plan_page_id": plan_page["id"],
+            "decision_day_page_id": decision_day_page["id"],
             "orders_created": orders_result["created"],
             "orders_updated": orders_result["updated"],
             "orders_archived": orders_result["archived"],
+            "decision_latest_updates": decision_latest_updates,
+            "order_latest_updates": order_latest_updates,
         },
     }
 
 
-def _sync_daily_holdings(
+def _sync_holdings_snapshot(
     *,
     client: NotionClient,
     database_id: str,
@@ -284,7 +305,11 @@ def _sync_daily_holdings(
         "Parsed At": _date_value(normalized_snapshot.get("parsed_at")),
         "Confirmed At": _date_value(normalized_snapshot.get("confirmed_at")),
     }
-    body_children = _build_holdings_body(raw_snapshot=raw_snapshot, raw_ocr_text=raw_ocr_text, positions=normalized_snapshot["positions"])
+    body_children = _build_holdings_body(
+        raw_snapshot=raw_snapshot,
+        raw_ocr_text=raw_ocr_text,
+        positions=normalized_snapshot["positions"],
+    )
 
     page = _query_single_page(
         client,
@@ -296,8 +321,7 @@ def _sync_daily_holdings(
         return {"id": created["id"], "created": True}
 
     client.update_page(page["id"], properties=properties)
-    if body_children and not client.list_block_children(page["id"]):
-        client.append_block_children(page["id"], body_children)
+    _sync_page_body(client=client, page_id=page["id"], body_children=body_children)
     return {"id": page["id"], "created": False}
 
 
@@ -312,9 +336,8 @@ def _sync_holding_positions(
     snapshot_key = _require_text(normalized_snapshot, "snapshot_key", label="holdings snapshot")
     desired: dict[str, dict[str, Any]] = {}
     for instrument, quantity in sorted(normalized_snapshot["positions"].items()):
-        title = f"{signal_date} | {instrument}"
         desired[instrument] = {
-            "Name": _title_value(title),
+            "Name": _title_value(f"{signal_date} | {instrument}"),
             "Signal Date": _date_value(signal_date),
             "Snapshot Key": _rich_text_value(snapshot_key),
             "Instrument": _rich_text_value(instrument),
@@ -362,30 +385,30 @@ def _sync_daily_rankings(
     source_run_path: str,
     holding_page_id: str,
     top_n: int,
+    bond_name_map: dict[str, str],
 ) -> dict[str, Any]:
     signal_date = _require_text(ranking_snapshot, "signal_date", label="ranking snapshot")
     snapshot_key = _require_text(ranking_snapshot, "ranking_snapshot_key", label="ranking snapshot")
     run_id = _require_text(ranking_snapshot, "run_id", label="ranking snapshot")
-    ranked_entries = ranking_snapshot.get("ranked_entries")
-    if not isinstance(ranked_entries, list) or not ranked_entries:
+    ranked_entries = _iter_ranked_entries(ranking_snapshot)
+    if not ranked_entries:
         raise NotionSyncError("ranking snapshot must contain a non-empty ranked_entries list")
-    top_instruments = ",".join(str(item.get("instrument") or "").strip() for item in ranked_entries[:top_n] if item.get("instrument"))
     properties = {
         "Name": _title_value(f"{signal_date} | {run_id}"),
         "Signal Date": _date_value(signal_date),
         "Run ID": _rich_text_value(run_id),
         "Ranking Snapshot Key": _rich_text_value(snapshot_key),
         "Policy": _select_value(str(ranking_snapshot.get("policy_name") or "")),
-        "Generated At": _date_value(ranking_snapshot.get("generated_at")),
+        "Generated At": _date_value(_coalesce_text(ranking_snapshot.get("generated_at"))),
         "Ranked Universe Count": _number_value(int(ranking_snapshot.get("ranked_universe_count") or 0)),
-        "Top K": _number_value(top_n),
-        "Top 6 Instruments": _rich_text_value(top_instruments),
+        "Top 6 Summary": _rich_text_value(_build_top_summary(ranking_snapshot, bond_name_map=bond_name_map, limit=top_n)),
         "Snapshot Status": _select_value("usable_for_plan"),
         "Ranking JSON Path": _rich_text_value(str(ranking_snapshot_path)),
         "Ranking CSV Path": _rich_text_value(str(ranking_csv_path)),
         "Source Run Path": _rich_text_value(source_run_path),
         "Holdings Snapshot": _relation_value([holding_page_id]),
     }
+    body_children = _build_ranking_body(ranking_snapshot=ranking_snapshot, bond_name_map=bond_name_map)
 
     page = _query_single_page(
         client,
@@ -393,166 +416,147 @@ def _sync_daily_rankings(
         {"property": "Ranking Snapshot Key", "rich_text": {"equals": snapshot_key}},
     )
     if page is None:
-        created = client.create_page(database_id=database_id, properties=properties)
+        created = client.create_page(database_id=database_id, properties=properties, children=body_children or None)
         return {"id": created["id"], "created": True}
 
     client.update_page(page["id"], properties=properties)
+    _sync_page_body(client=client, page_id=page["id"], body_children=body_children)
     return {"id": page["id"], "created": False}
 
 
-def _sync_ranking_focus(
-    *,
-    client: NotionClient,
-    database_id: str,
-    ranking_page_id: str,
-    ranking_snapshot: dict[str, Any],
-    current_positions: dict[str, float],
-    top_n: int,
-    focus_top_k: int,
-) -> dict[str, int]:
-    signal_date = _require_text(ranking_snapshot, "signal_date", label="ranking snapshot")
-    snapshot_key = _require_text(ranking_snapshot, "ranking_snapshot_key", label="ranking snapshot")
-    focus_entries = _build_focus_entries(
-        ranking_snapshot=ranking_snapshot,
-        current_positions=current_positions,
-        top_n=top_n,
-        focus_top_k=focus_top_k,
-    )
-
-    desired: dict[str, dict[str, Any]] = {}
-    for entry in focus_entries:
-        instrument = _require_text(entry, "instrument", label="focus entry")
-        desired[instrument] = {
-            "Name": _title_value(f"{signal_date} | {instrument}"),
-            "Signal Date": _date_value(signal_date),
-            "Ranking Snapshot Key": _rich_text_value(snapshot_key),
-            "Instrument": _rich_text_value(instrument),
-            "Display Rank": _number_value(entry.get("display_rank")),
-            "Final Score": _number_value(entry.get("final_score")),
-            "In Top 6": _checkbox_value(bool(entry.get("in_top_n"))),
-            "In Top 20": _checkbox_value(bool(entry.get("in_focus_top_k"))),
-            "Current In Portfolio": _checkbox_value(bool(entry.get("current_in_portfolio"))),
-            "Current Holding Qty": _number_value(entry.get("current_holding_qty")),
-            "Source Strategies": _multi_select_value(entry.get("source_strategies")),
-            "Source Scores": _rich_text_value(_stringify_source_scores(entry.get("source_scores"))),
-            "Ranking Snapshot": _relation_value([ranking_page_id]),
-        }
-
-    existing_pages = client.query_database(
-        database_id,
-        filter_={"property": "Ranking Snapshot", "relation": {"contains": ranking_page_id}},
-    )
-    existing_by_instrument = {
-        _plain_rich_text(page, "Instrument"): page
-        for page in existing_pages
-        if _plain_rich_text(page, "Instrument")
-    }
-
-    created = 0
-    updated = 0
-    for instrument, properties in desired.items():
-        page = existing_by_instrument.get(instrument)
-        if page is None:
-            client.create_page(database_id=database_id, properties=properties)
-            created += 1
-            continue
-        client.update_page(page["id"], properties=properties)
-        updated += 1
-
-    archived = 0
-    for instrument, page in existing_by_instrument.items():
-        if instrument in desired:
-            continue
-        client.update_page(page["id"], archived=True)
-        archived += 1
-    return {"created": created, "updated": updated, "archived": archived}
-
-
-def _sync_daily_plan(
+def _sync_decision_day(
     *,
     client: NotionClient,
     database_id: str,
     plan: dict[str, Any],
+    holdings_snapshot: dict[str, Any],
+    ranking_snapshot: dict[str, Any],
     holding_page_id: str,
     ranking_page_id: str,
+    bond_name_map: dict[str, str],
 ) -> dict[str, Any]:
-    run_id = _require_text(plan, "run_id", label="plan")
-    trade_date = _require_text(plan, "trade_date", label="plan")
-    create_properties = {
-        "Name": _title_value(f"{trade_date} | {run_id}"),
-        "Trade Date": _date_value(trade_date),
-        "Signal Date": _date_value(plan.get("signal_date")),
-        "Run ID": _rich_text_value(run_id),
-        "Policy": _select_value(str(plan.get("policy_name") or "")),
-        "Bootstrap": _checkbox_value(bool(plan.get("bootstrap"))),
+    signal_date = _require_text(plan, "signal_date", label="plan")
+    holdings_status = str(holdings_snapshot.get("parse_status") or "missing")
+    ranking_status = "usable_for_plan"
+    page = _query_single_page(
+        client,
+        database_id,
+        {"property": "Signal Date", "date": {"equals": signal_date}},
+    )
+    review_verdict = _plain_select(page, "Review Verdict") if page else "pending"
+    decision_status = _derive_decision_status(
+        review_verdict=review_verdict,
+        holdings_status=holdings_status,
+        ranking_status=ranking_status,
+    )
+    properties = {
+        "Name": _title_value(signal_date),
+        "Signal Date": _date_value(signal_date),
+        "Trade Date": _date_value(_coalesce_text(plan.get("trade_date"))),
+        "Decision Status": _select_value(decision_status),
+        "Is Latest": _checkbox_value(True),
+        "Holdings Status": _select_value(holdings_status),
+        "Ranking Status": _select_value(ranking_status),
+        "Current Positions Count": _number_value(plan.get("current_positions_count")),
         "Buy Count": _number_value(plan.get("buy_count")),
         "Sell Count": _number_value(plan.get("sell_count")),
-        "Hold Count": _number_value(plan.get("hold_count")),
+        "Keep Count": _number_value(plan.get("hold_count")),
         "Watch Count": _number_value(plan.get("watch_count")),
+        "Top 6 Summary": _rich_text_value(_build_top_summary(ranking_snapshot, bond_name_map=bond_name_map, limit=6)),
+        "Policy": _select_value(str(plan.get("policy_name") or "")),
         "Target N": _number_value(plan.get("target_n")),
         "Max Drop": _number_value(plan.get("max_drop")),
         "Ranked Universe Count": _number_value(plan.get("ranked_universe_count")),
-        "Current Positions Count": _number_value(plan.get("current_positions_count")),
-        "Holdings Snapshot At": _date_value(plan.get("holdings_confirmed_at")),
+        "Holdings Snapshot At": _date_value(_coalesce_text(plan.get("holdings_confirmed_at"))),
+        "Generated At": _date_value(_coalesce_text(plan.get("generated_at"))),
+        "Run ID": _rich_text_value(str(plan.get("run_id") or "")),
         "Source Run Path": _rich_text_value(str(plan.get("source_run_path") or "")),
         "Plan JSON Path": _rich_text_value(str(plan.get("json_path") or "")),
         "Plan CSV Path": _rich_text_value(str(plan.get("csv_path") or "")),
         "Brief HTML Path": _rich_text_value(str(plan.get("html_path") or "")),
-        "Generated At": _date_value(plan.get("generated_at")),
         "Holdings Snapshot": _relation_value([holding_page_id]),
         "Ranking Snapshot": _relation_value([ranking_page_id]),
-        "Review Status": _select_value("new"),
     }
-    update_properties = {key: value for key, value in create_properties.items() if key != "Review Status"}
-    page = _query_single_page(
-        client,
-        database_id,
-        {
-            "and": [
-                {"property": "Run ID", "rich_text": {"equals": run_id}},
-                {"property": "Trade Date", "date": {"equals": trade_date}},
-            ]
-        },
+    body_children = _build_decision_day_body(
+        plan=plan,
+        holdings_snapshot=holdings_snapshot,
+        ranking_snapshot=ranking_snapshot,
+        bond_name_map=bond_name_map,
+        decision_status=decision_status,
     )
+
     if page is None:
-        created = client.create_page(database_id=database_id, properties=create_properties)
+        create_properties = {
+            **properties,
+            "Review Verdict": _select_value("pending"),
+        }
+        created = client.create_page(database_id=database_id, properties=create_properties, children=body_children or None)
         return {"id": created["id"], "created": True}
 
-    client.update_page(page["id"], properties=update_properties)
+    client.update_page(page["id"], properties=properties)
+    _sync_page_body(client=client, page_id=page["id"], body_children=body_children)
     return {"id": page["id"], "created": False}
+
+
+def _link_page_to_decision_day(
+    *,
+    client: NotionClient,
+    page_id: str,
+    decision_day_page_id: str,
+) -> None:
+    client.update_page(
+        page_id,
+        properties={"Decision Day": _relation_value([decision_day_page_id])},
+    )
 
 
 def _sync_plan_orders(
     *,
     client: NotionClient,
     database_id: str,
-    plan_page_id: str,
+    decision_day_page_id: str,
     plan: dict[str, Any],
+    previous_rank_map: dict[str, int],
+    bond_name_map: dict[str, str],
 ) -> dict[str, int]:
     desired: dict[str, dict[str, Any]] = {}
+    signal_date = _require_text(plan, "signal_date", label="plan")
     for order in plan["orders"]:
         plan_key = _require_text(order, "plan_key", label="plan order")
         instrument = _require_text(order, "instrument", label="plan order")
-        trade_date = _require_text(order, "trade_date", label="plan order")
+        normalized_instrument = _normalize_instrument(instrument)
         source_strategies = _split_source_strategies(order.get("source_strategies"))
+        display_rank = _coerce_int(order.get("display_rank"))
+        prev_display_rank = previous_rank_map.get(normalized_instrument)
         create_properties = {
-            "Name": _title_value(f"{trade_date} | {instrument}"),
+            "Name": _title_value(f"{signal_date} | {instrument}"),
             "Plan Key": _rich_text_value(plan_key),
-            "Trade Date": _date_value(trade_date),
-            "Signal Date": _date_value(order.get("signal_date")),
+            "Signal Date": _date_value(_coalesce_text(order.get("signal_date"))),
+            "Trade Date": _date_value(_coalesce_text(order.get("trade_date"))),
+            "Bond Name": _rich_text_value(bond_name_map.get(normalized_instrument, "")),
             "Instrument": _rich_text_value(instrument),
-            "Display Rank": _number_value(order.get("display_rank")),
+            "Display Rank": _number_value(display_rank),
+            "Prev Display Rank": _number_value(prev_display_rank),
+            "Rank Delta": _number_value(_derive_rank_delta(prev_display_rank, display_rank)),
+            "Portfolio Move": _select_value(
+                _derive_portfolio_move(
+                    current_in_portfolio=bool(order.get("current_in_portfolio")),
+                    planned_in_portfolio=bool(order.get("planned_in_portfolio")),
+                )
+            ),
+            "Action": _select_value(str(order.get("strategy_action") or "")),
+            "Action Color": _select_value(str(order.get("strategy_action") or "")),
+            "Reason": _select_value(str(order.get("strategy_reason") or "")),
             "Current Holding Qty": _number_value(order.get("current_holding_qty")),
             "Current In Portfolio": _checkbox_value(bool(order.get("current_in_portfolio"))),
-            "Ranked Top N": _checkbox_value(bool(order.get("ranked_top_n"))),
             "Planned In Portfolio": _checkbox_value(bool(order.get("planned_in_portfolio"))),
-            "Action": _select_value(str(order.get("strategy_action") or "")),
-            "Reason": _select_value(str(order.get("strategy_reason") or "")),
+            "Ranked Top N": _checkbox_value(bool(order.get("ranked_top_n"))),
+            "Policy": _select_value(str(order.get("policy_name") or "")),
             "Source Strategies": _multi_select_value(source_strategies),
             "Source Scores": _rich_text_value(str(order.get("source_scores") or "")),
-            "Policy": _select_value(str(order.get("policy_name") or "")),
-            "Updated At": _date_value(order.get("updated_at")),
-            "Daily Plan": _relation_value([plan_page_id]),
+            "Updated At": _date_value(_coalesce_text(order.get("updated_at"))),
+            "Is Latest": _checkbox_value(True),
+            "Decision Day": _relation_value([decision_day_page_id]),
             "Checked": _checkbox_value(False),
         }
         update_properties = {key: value for key, value in create_properties.items() if key != "Checked"}
@@ -563,7 +567,7 @@ def _sync_plan_orders(
 
     existing_pages = client.query_database(
         database_id,
-        filter_={"property": "Daily Plan", "relation": {"contains": plan_page_id}},
+        filter_={"property": "Decision Day", "relation": {"contains": decision_day_page_id}},
     )
     existing_by_key = {
         _plain_rich_text(page, "Plan Key"): page
@@ -589,6 +593,23 @@ def _sync_plan_orders(
         client.update_page(page["id"], archived=True)
         archived += 1
     return {"created": created, "updated": updated, "archived": archived}
+
+
+def _sync_is_latest_flag(
+    *,
+    client: NotionClient,
+    database_id: str,
+    signal_date: str,
+) -> int:
+    pages = client.query_database(database_id)
+    updated = 0
+    for page in pages:
+        desired = _plain_date(page, "Signal Date") == signal_date
+        if _plain_checkbox(page, "Is Latest") == desired:
+            continue
+        client.update_page(page["id"], properties={"Is Latest": _checkbox_value(desired)})
+        updated += 1
+    return updated
 
 
 def _load_or_build_plan(config: OrchestratorConfig, *, run_id: str, trade_date: str) -> dict[str, Any]:
@@ -627,69 +648,121 @@ def _write_ranking_snapshot_csv(snapshot_path: Path, ranking_snapshot: dict[str,
     return csv_path
 
 
-def _build_focus_entries(
+def _sync_page_body(
+    *,
+    client: NotionClient,
+    page_id: str,
+    body_children: list[dict[str, Any]],
+) -> None:
+    if not body_children:
+        return
+    existing_children = client.list_block_children(page_id)
+    if _block_signatures(existing_children) == _block_signatures(body_children):
+        return
+    for block in existing_children:
+        block_id = str(block.get("id") or "")
+        if block_id:
+            client.update_block(block_id, archived=True)
+    client.append_block_children(page_id, body_children)
+
+
+def _block_signatures(blocks: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return [_block_signature(block) for block in blocks]
+
+
+def _block_signature(block: dict[str, Any]) -> tuple[str, str]:
+    block_type = str(block.get("type") or "")
+    payload = block.get(block_type)
+    if not isinstance(payload, dict):
+        return (block_type, "")
+    rich_text = payload.get("rich_text")
+    if not isinstance(rich_text, list):
+        return (block_type, "")
+    parts: list[str] = []
+    for item in rich_text:
+        if not isinstance(item, dict):
+            continue
+        plain_text = item.get("plain_text")
+        if plain_text is None:
+            plain_text = item.get("text", {}).get("content", "")
+        parts.append(str(plain_text or ""))
+    return (block_type, "".join(parts))
+
+
+def _build_decision_day_body(
+    *,
+    plan: dict[str, Any],
+    holdings_snapshot: dict[str, Any],
+    ranking_snapshot: dict[str, Any],
+    bond_name_map: dict[str, str],
+    decision_status: str,
+) -> list[dict[str, Any]]:
+    top_summary = _build_top_summary(ranking_snapshot, bond_name_map=bond_name_map, limit=6) or "N/A"
+    blocks = [_heading_block("Decision Summary")]
+    blocks.extend(
+        _bulleted_blocks(
+            [
+                f"Decision status: {decision_status}",
+                f"Trade date: {plan.get('trade_date') or ''}",
+                f"Holdings status: {holdings_snapshot.get('parse_status') or 'missing'}",
+                f"Buy / Sell / Keep / Watch: {int(plan.get('buy_count') or 0)} / {int(plan.get('sell_count') or 0)} / {int(plan.get('hold_count') or 0)} / {int(plan.get('watch_count') or 0)}",
+            ]
+        )
+    )
+    blocks.append(_heading_block("Holdings Snapshot"))
+    blocks.extend(
+        _bulleted_blocks(
+            [
+                f"Snapshot key: {holdings_snapshot.get('snapshot_key') or ''}",
+                f"Positions count: {len(holdings_snapshot.get('positions', {}))}",
+                f"Confirmed at: {holdings_snapshot.get('confirmed_at') or ''}",
+            ]
+        )
+    )
+    blocks.append(_heading_block("Top 6 Snapshot"))
+    blocks.extend(_paragraph_blocks(top_summary))
+    blocks.append(_heading_block("Portfolio Changes"))
+    blocks.extend(
+        _bulleted_blocks(
+            [
+                f"Enter: {_summarize_move(plan['orders'], move='enter', bond_name_map=bond_name_map)}",
+                f"Keep: {_summarize_move(plan['orders'], move='keep', bond_name_map=bond_name_map)}",
+                f"Exit: {_summarize_move(plan['orders'], move='exit', bond_name_map=bond_name_map)}",
+            ]
+        )
+    )
+    blocks.append(_heading_block("Artifacts"))
+    blocks.extend(
+        _bulleted_blocks(
+            [
+                f"Plan JSON: {plan.get('json_path') or ''}",
+                f"Plan CSV: {plan.get('csv_path') or ''}",
+                f"Brief HTML: {plan.get('html_path') or ''}",
+            ]
+        )
+    )
+    return blocks
+
+
+def _build_ranking_body(
     *,
     ranking_snapshot: dict[str, Any],
-    current_positions: dict[str, float],
-    top_n: int,
-    focus_top_k: int,
+    bond_name_map: dict[str, str],
 ) -> list[dict[str, Any]]:
-    ranked_entries = ranking_snapshot.get("ranked_entries")
-    if not isinstance(ranked_entries, list):
-        raise NotionSyncError("ranking snapshot missing ranked_entries")
-
-    current_position_map = {str(instrument): float(quantity) for instrument, quantity in current_positions.items()}
-    ranked_by_instrument = {
-        str(item.get("instrument")): item
-        for item in ranked_entries
-        if item.get("instrument")
-    }
-    selected: dict[str, dict[str, Any]] = {}
-    for index, item in enumerate(ranked_entries, start=1):
-        instrument = str(item.get("instrument") or "").strip()
+    blocks = [_heading_block("Top 20 Ranking")]
+    lines: list[str] = []
+    for item in _iter_ranked_entries(ranking_snapshot)[:20]:
+        instrument = _normalize_instrument(str(item.get("instrument") or ""))
         if not instrument:
             continue
-        if index <= focus_top_k or instrument in current_position_map:
-            selected[instrument] = item
-
-    for instrument, quantity in current_position_map.items():
-        if instrument in selected:
-            continue
-        selected[instrument] = {
-            "instrument": instrument,
-            "display_rank": None,
-            "final_score": None,
-            "source_strategies": [],
-            "source_scores": {},
-        }
-
-    rows: list[dict[str, Any]] = []
-    for instrument, item in selected.items():
-        rank = item.get("display_rank")
-        rows.append(
-            {
-                "instrument": instrument,
-                "display_rank": rank,
-                "final_score": item.get("final_score"),
-                "in_top_n": isinstance(rank, int) and rank <= top_n,
-                "in_focus_top_k": isinstance(rank, int) and rank <= focus_top_k,
-                "current_in_portfolio": instrument in current_position_map,
-                "current_holding_qty": current_position_map.get(instrument),
-                "source_strategies": _coerce_list(item.get("source_strategies")),
-                "source_scores": item.get("source_scores") or {},
-            }
+        label = _format_instrument_label(instrument, bond_name_map)
+        score = _stringify_source_scores(item.get("source_scores"))
+        final_score = _format_score(item.get("final_score"))
+        lines.append(
+            f"{int(item.get('display_rank') or 0)}. {label} | final_score={final_score} | source_scores={score or '-'}"
         )
-    rows.sort(key=lambda item: (_sort_rank(item.get("display_rank")), item["instrument"]))
-    return rows
-
-
-def _query_single_page(
-    client: NotionClient,
-    database_id: str,
-    filter_: dict[str, Any],
-) -> dict[str, Any] | None:
-    results = client.query_database(database_id, filter_=filter_, page_size=10)
-    return results[0] if results else None
+    blocks.extend(_bulleted_blocks(lines or ["No ranking entries."]))
+    return blocks
 
 
 def _build_holdings_body(
@@ -727,6 +800,227 @@ def _build_ocr_preview(*, raw_ocr_text: str | None, positions: dict[str, float])
         return "No positions."
     preview = ", ".join(f"{instrument}:{quantity:g}" for instrument, quantity in sorted(positions.items()))
     return preview[:280]
+
+
+def _build_top_summary(
+    snapshot: dict[str, Any],
+    *,
+    bond_name_map: dict[str, str],
+    limit: int,
+) -> str:
+    parts: list[str] = []
+    for item in _iter_ranked_entries(snapshot)[:limit]:
+        instrument = _normalize_instrument(str(item.get("instrument") or ""))
+        if not instrument:
+            continue
+        parts.append(_format_instrument_label(instrument, bond_name_map))
+    return " / ".join(parts)
+
+
+def _iter_ranked_entries(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    ranked_entries = snapshot.get("ranked_entries")
+    if isinstance(ranked_entries, list):
+        return ranked_entries
+    ranked_orders = snapshot.get("ranked_orders")
+    if isinstance(ranked_orders, list):
+        return ranked_orders
+    return []
+
+
+def _summarize_move(
+    orders: list[dict[str, Any]],
+    *,
+    move: str,
+    bond_name_map: dict[str, str],
+) -> str:
+    labels: list[str] = []
+    for order in orders:
+        portfolio_move = _derive_portfolio_move(
+            current_in_portfolio=bool(order.get("current_in_portfolio")),
+            planned_in_portfolio=bool(order.get("planned_in_portfolio")),
+        )
+        if portfolio_move != move:
+            continue
+        instrument = _normalize_instrument(str(order.get("instrument") or ""))
+        if not instrument:
+            continue
+        labels.append(_format_instrument_label(instrument, bond_name_map))
+    if not labels:
+        return "-"
+    if len(labels) <= 6:
+        return ", ".join(labels)
+    return f'{", ".join(labels[:6])} (+{len(labels) - 6} more)'
+
+
+def _format_instrument_label(instrument: str, bond_name_map: dict[str, str]) -> str:
+    bond_name = bond_name_map.get(_normalize_instrument(instrument), "").strip()
+    if bond_name:
+        return f"{bond_name}({instrument})"
+    return instrument
+
+
+def _derive_portfolio_move(*, current_in_portfolio: bool, planned_in_portfolio: bool) -> str:
+    if current_in_portfolio and planned_in_portfolio:
+        return "keep"
+    if current_in_portfolio and not planned_in_portfolio:
+        return "exit"
+    if planned_in_portfolio:
+        return "enter"
+    return "ignore"
+
+
+def _derive_rank_delta(prev_display_rank: int | None, display_rank: int | None) -> int | None:
+    if prev_display_rank is None or display_rank is None:
+        return None
+    return int(prev_display_rank) - int(display_rank)
+
+
+def _derive_decision_status(
+    *,
+    review_verdict: str,
+    holdings_status: str,
+    ranking_status: str,
+) -> str:
+    if holdings_status == "missing":
+        return "waiting_holdings"
+    if ranking_status == "missing":
+        return "waiting_ranking"
+    if holdings_status in {"parsed", "needs_review", "error"} or ranking_status == "blocked":
+        return "blocked"
+    if review_verdict in {"accepted", "ignored"}:
+        return "reviewed"
+    return "review_pending"
+
+
+def _load_previous_rank_map(config: OrchestratorConfig, signal_date: str) -> dict[str, int]:
+    plan_root = config.plan_input_root
+    if not plan_root.exists():
+        return {}
+    for candidate in sorted(plan_root.iterdir(), key=lambda item: item.name, reverse=True):
+        if not candidate.is_dir() or candidate.name >= signal_date:
+            continue
+        snapshot_path = candidate / "ranking_snapshot.json"
+        if not snapshot_path.exists():
+            continue
+        try:
+            previous_snapshot = load_ranking_snapshot(snapshot_path)
+        except Exception:
+            continue
+        return {
+            _normalize_instrument(str(item.get("instrument") or "")): int(item["display_rank"])
+            for item in _iter_ranked_entries(previous_snapshot)
+            if item.get("instrument") and _coerce_int(item.get("display_rank")) is not None
+        }
+    return {}
+
+
+def _load_bond_name_map(config: OrchestratorConfig) -> dict[str, str]:
+    candidate_paths: list[Path] = []
+    if config.notion_bond_name_map_path:
+        candidate_paths.append(config.notion_bond_name_map_path)
+    candidate_paths.extend(
+        [
+            config.runtime_repo_root / "local_assets" / "cb_basic.csv",
+            config.runtime_repo_root / "local_assets" / "cb_basic.json",
+            config.runtime_repo_root / "local_state" / "cb_basic.csv",
+            config.upstream_repo_root / "data" / "cb_basic.csv",
+            config.upstream_repo_root / "cb_basic.csv",
+        ]
+    )
+
+    seen: set[Path] = set()
+    for path in candidate_paths:
+        resolved = path.expanduser()
+        if resolved in seen or not resolved.exists():
+            continue
+        seen.add(resolved)
+        mapping = _load_bond_name_map_file(resolved)
+        if mapping:
+            return mapping
+    return {}
+
+
+def _load_bond_name_map_file(path: Path) -> dict[str, str]:
+    if path.suffix.lower() == ".json":
+        return _load_bond_name_map_json(path)
+    return _load_bond_name_map_csv(path)
+
+
+def _load_bond_name_map_json(path: Path) -> dict[str, str]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(payload, dict):
+        return {
+            _normalize_instrument(str(key)): str(value).strip()
+            for key, value in payload.items()
+            if str(key).strip() and str(value).strip()
+        }
+    if not isinstance(payload, list):
+        return {}
+    mapping: dict[str, str] = {}
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        code, bond_name = _extract_bond_name_row(row)
+        if code and bond_name:
+            mapping[code] = bond_name
+    return mapping
+
+
+def _load_bond_name_map_csv(path: Path) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            code, bond_name = _extract_bond_name_row(row)
+            if code and bond_name:
+                mapping[code] = bond_name
+    return mapping
+
+
+def _extract_bond_name_row(row: dict[str, Any]) -> tuple[str | None, str | None]:
+    instrument = _coalesce_text(
+        row.get("instrument"),
+        row.get("qlib_code"),
+        row.get("code"),
+    )
+    if not instrument:
+        ts_code = _coalesce_text(row.get("ts_code"))
+        if ts_code:
+            instrument = _ts_code_to_instrument(ts_code)
+    if not instrument:
+        return None, None
+    bond_name = _coalesce_text(
+        row.get("bond_short_name"),
+        row.get("bond_name"),
+        row.get("name"),
+    )
+    if not bond_name:
+        return None, None
+    return _normalize_instrument(instrument), bond_name
+
+
+def _ts_code_to_instrument(value: str) -> str:
+    normalized = str(value).strip().upper()
+    if "." not in normalized:
+        return _normalize_instrument(normalized)
+    code, market = normalized.split(".", 1)
+    market = market.strip()
+    code = code.strip()
+    if not market or not code:
+        return _normalize_instrument(normalized)
+    return _normalize_instrument(f"{market}{code}")
+
+
+def _query_single_page(
+    client: NotionClient,
+    database_id: str,
+    filter_: dict[str, Any],
+) -> dict[str, Any] | None:
+    results = client.query_database(database_id, filter_=filter_, page_size=10)
+    return results[0] if results else None
 
 
 def _heading_block(text: str) -> dict[str, Any]:
@@ -811,11 +1105,46 @@ def _relation_value(page_ids: list[str] | tuple[str, ...]) -> dict[str, Any]:
     return {"relation": [{"id": page_id} for page_id in page_ids]}
 
 
-def _plain_rich_text(page: dict[str, Any], property_name: str) -> str:
+def _plain_rich_text(page: dict[str, Any] | None, property_name: str) -> str:
+    if not page:
+        return ""
     prop = page.get("properties", {}).get(property_name, {})
     if prop.get("type") != "rich_text":
         return ""
     return "".join(item.get("plain_text", "") for item in prop.get("rich_text", []))
+
+
+def _plain_select(page: dict[str, Any] | None, property_name: str) -> str:
+    if not page:
+        return ""
+    prop = page.get("properties", {}).get(property_name, {})
+    if prop.get("type") != "select":
+        return ""
+    value = prop.get("select")
+    if not isinstance(value, dict):
+        return ""
+    return str(value.get("name") or "")
+
+
+def _plain_checkbox(page: dict[str, Any] | None, property_name: str) -> bool:
+    if not page:
+        return False
+    prop = page.get("properties", {}).get(property_name, {})
+    if prop.get("type") != "checkbox":
+        return False
+    return bool(prop.get("checkbox"))
+
+
+def _plain_date(page: dict[str, Any] | None, property_name: str) -> str:
+    if not page:
+        return ""
+    prop = page.get("properties", {}).get(property_name, {})
+    if prop.get("type") != "date":
+        return ""
+    value = prop.get("date")
+    if not isinstance(value, dict):
+        return ""
+    return str(value.get("start") or "")
 
 
 def _stringify_source_scores(value: Any) -> str:
@@ -849,14 +1178,6 @@ def _coerce_list(value: Any) -> list[str]:
     return []
 
 
-def _sort_rank(value: Any) -> tuple[int, float]:
-    if isinstance(value, int):
-        return (0, float(value))
-    if isinstance(value, float) and value.is_integer():
-        return (0, value)
-    return (1, float("inf"))
-
-
 def _infer_holdings_source_type(raw_snapshot: dict[str, Any], normalized_snapshot: dict[str, Any]) -> str:
     parse_status = str(raw_snapshot.get("parse_status") or normalized_snapshot.get("parse_status") or "")
     if parse_status == "confirmed_empty":
@@ -866,6 +1187,28 @@ def _infer_holdings_source_type(raw_snapshot: dict[str, Any], normalized_snapsho
     if raw_snapshot.get("raw_ocr_text") or raw_snapshot.get("ocr_text") or raw_snapshot.get("raw_text"):
         return "ocr_text"
     return "snapshot_bundle"
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_instrument(value: str) -> str:
+    return str(value).strip().upper()
 
 
 def _load_json_object(path: Path) -> dict[str, Any]:

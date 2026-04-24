@@ -105,9 +105,11 @@ class OrchestratorConfig:
     notion_daily_holdings_db_id: str | None = None
     notion_holding_positions_db_id: str | None = None
     notion_daily_rankings_db_id: str | None = None
+    notion_decision_days_db_id: str | None = None
     notion_ranking_focus_db_id: str | None = None
     notion_daily_plans_db_id: str | None = None
     notion_plan_orders_db_id: str | None = None
+    notion_bond_name_map_path: Path | None = None
     notion_focus_top_k: int = 20
 
     @classmethod
@@ -234,9 +236,13 @@ class OrchestratorConfig:
             notion_daily_holdings_db_id=merged.get("NOTION_DAILY_HOLDINGS_DB_ID"),
             notion_holding_positions_db_id=merged.get("NOTION_HOLDING_POSITIONS_DB_ID"),
             notion_daily_rankings_db_id=merged.get("NOTION_DAILY_RANKINGS_DB_ID"),
+            notion_decision_days_db_id=merged.get("NOTION_DECISION_DAYS_DB_ID"),
             notion_ranking_focus_db_id=merged.get("NOTION_RANKING_FOCUS_DB_ID"),
             notion_daily_plans_db_id=merged.get("NOTION_DAILY_PLANS_DB_ID"),
             notion_plan_orders_db_id=merged.get("NOTION_PLAN_ORDERS_DB_ID"),
+            notion_bond_name_map_path=Path(merged["NOTION_BOND_NAME_MAP_PATH"]).expanduser().resolve()
+            if merged.get("NOTION_BOND_NAME_MAP_PATH")
+            else None,
             notion_focus_top_k=int(merged.get("NOTION_FOCUS_TOP_K", "20")),
         )
 
@@ -269,7 +275,6 @@ class OrchestratorConfig:
             and self.notion_daily_holdings_db_id
             and self.notion_holding_positions_db_id
             and self.notion_daily_rankings_db_id
-            and self.notion_ranking_focus_db_id
-            and self.notion_daily_plans_db_id
+            and self.notion_decision_days_db_id
             and self.notion_plan_orders_db_id
         )

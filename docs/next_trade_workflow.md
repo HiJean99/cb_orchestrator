@@ -187,32 +187,37 @@ planner 固定读取：
 
 ## Notion 映射
 
-当前已定的 6 张数据库：
+当前 Notion V2 的 5 个核心对象：
 
-- `CB Daily Holdings`
+- `CB Holdings Snapshots`
 - `CB Holding Positions`
 - `CB Daily Rankings`
-- `CB Ranking Focus`
-- `CB Daily Plans`
+- `CB Decision Days`
 - `CB Plan Orders`
 
 关系方向：
 
-- `CB Daily Holdings` <-> `CB Holding Positions`
-- `CB Daily Rankings` <-> `CB Ranking Focus`
-- `CB Daily Plans` <-> `CB Plan Orders`
-- `CB Daily Rankings` -> `Holdings Snapshot`
-- `CB Daily Plans` -> `Holdings Snapshot`
-- `CB Daily Plans` -> `Ranking Snapshot`
+- `CB Holdings Snapshots` <-> `CB Holding Positions`
+- `CB Decision Days` <-> `CB Plan Orders`
+- `CB Decision Days` -> `Holdings Snapshot`
+- `CB Decision Days` -> `Ranking Snapshot`
+- `CB Holdings Snapshots` -> `Decision Day`
+- `CB Daily Rankings` -> `Decision Day`
 
 首页顺序：
 
-1. `今日持仓`
-2. `今日排名`
-3. `排名焦点`
+1. `待确认持仓`
+2. `今日决策包`
+3. `组合变化`
 4. `待复核计划`
-5. `最近计划`
-6. `未处理订单`
+5. `最近复盘`
+
+其中：
+
+- `CB Decision Days` 是首页中心对象，一天一行
+- `CB Plan Orders` 是“组合变化”的真实来源表
+- `CB Holding Positions` 只保留为技术明细，不进首页
+- `CB Ranking Focus` / `CB Daily Plans` 保留为 legacy，不再承担首页主入口角色
 
 `CB Data Sources` 只保留原始数据库和 schema，不承担首页入口角色。
 

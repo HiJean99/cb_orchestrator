@@ -5,39 +5,60 @@ import json
 from pathlib import Path
 
 from cb_orchestrator.notion_sync import (
-    _build_focus_entries,
+    _build_top_summary,
+    _derive_portfolio_move,
+    _derive_rank_delta,
     _infer_holdings_source_type,
+    _load_bond_name_map_file,
     _stringify_source_scores,
     _write_ranking_snapshot_csv,
 )
 
 
-def test_build_focus_entries_keeps_top_focus_and_current_holdings() -> None:
+def test_build_top_summary_prefers_bond_name_and_falls_back_to_code() -> None:
     ranking_snapshot = {
-        "signal_date": "2026-04-20",
-        "ranking_snapshot_key": "ranking-2026-04-20",
         "ranked_entries": [
-            {"instrument": "A", "display_rank": 1, "final_score": 0.9, "source_strategies": ["s1"], "source_scores": {"s1": 0.9}},
-            {"instrument": "B", "display_rank": 2, "final_score": 0.8, "source_strategies": ["s1"], "source_scores": {"s1": 0.8}},
-            {"instrument": "C", "display_rank": 3, "final_score": 0.7, "source_strategies": ["s1"], "source_scores": {"s1": 0.7}},
-            {"instrument": "D", "display_rank": 4, "final_score": 0.6, "source_strategies": ["s1"], "source_scores": {"s1": 0.6}},
-            {"instrument": "E", "display_rank": 5, "final_score": 0.5, "source_strategies": ["s1"], "source_scores": {"s1": 0.5}},
-        ],
+            {"instrument": "SH113584", "display_rank": 1},
+            {"instrument": "SZ128134", "display_rank": 2},
+        ]
     }
 
-    rows = _build_focus_entries(
-        ranking_snapshot=ranking_snapshot,
-        current_positions={"E": 100.0, "Z": 100.0},
-        top_n=3,
-        focus_top_k=2,
+    summary = _build_top_summary(
+        ranking_snapshot,
+        bond_name_map={"SH113584": "闻泰转债"},
+        limit=2,
     )
 
-    assert [row["instrument"] for row in rows] == ["A", "B", "E", "Z"]
-    assert rows[0]["in_top_n"] is True
-    assert rows[1]["in_focus_top_k"] is True
-    assert rows[2]["current_holding_qty"] == 100.0
-    assert rows[3]["display_rank"] is None
-    assert rows[3]["current_in_portfolio"] is True
+    assert summary == "闻泰转债(SH113584) / SZ128134"
+
+
+def test_derive_portfolio_move_maps_current_and_planned_flags() -> None:
+    assert _derive_portfolio_move(current_in_portfolio=False, planned_in_portfolio=True) == "enter"
+    assert _derive_portfolio_move(current_in_portfolio=True, planned_in_portfolio=True) == "keep"
+    assert _derive_portfolio_move(current_in_portfolio=True, planned_in_portfolio=False) == "exit"
+    assert _derive_portfolio_move(current_in_portfolio=False, planned_in_portfolio=False) == "ignore"
+
+
+def test_derive_rank_delta_uses_previous_rank_minus_current_rank() -> None:
+    assert _derive_rank_delta(8, 3) == 5
+    assert _derive_rank_delta(3, 8) == -5
+    assert _derive_rank_delta(None, 8) is None
+    assert _derive_rank_delta(8, None) is None
+
+
+def test_load_bond_name_map_file_supports_tushare_ts_code_csv(tmp_path: Path) -> None:
+    csv_path = tmp_path / "cb_basic.csv"
+    csv_path.write_text(
+        "ts_code,bond_short_name\n113584.SH,闻泰转债\n128134.SZ,绿动转债\n",
+        encoding="utf-8",
+    )
+
+    mapping = _load_bond_name_map_file(csv_path)
+
+    assert mapping == {
+        "SH113584": "闻泰转债",
+        "SZ128134": "绿动转债",
+    }
 
 
 def test_write_ranking_snapshot_csv_materializes_full_snapshot(tmp_path: Path) -> None:

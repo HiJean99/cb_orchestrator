@@ -1,0 +1,114 @@
+{
+  "signal_date": "2026-04-20",
+  "run_id": "20260421_150716",
+  "ranking_snapshot_key": "ranking-2026-04-20-manual-check",
+  "policy_name": "ensemble_daily",
+  "generated_at": "2026-04-20T20:00:00+08:00",
+  "ranked_universe_count": 8,
+  "ranked_entries": [
+    {
+      "instrument": "SZ128125",
+      "display_rank": 1,
+      "final_score": 0.981,
+      "source_strategies": [
+        "cb_batch_15",
+        "cb_batch_27"
+      ],
+      "source_scores": {
+        "cb_batch_15": 0.981,
+        "cb_batch_27": 0.971
+      }
+    },
+    {
+      "instrument": "SH113584",
+      "display_rank": 2,
+      "final_score": 0.972,
+      "source_strategies": [
+        "cb_batch_15",
+        "cb_batch_27"
+      ],
+      "source_scores": {
+        "cb_batch_15": 0.972,
+        "cb_batch_27": 0.962
+      }
+    },
+    {
+      "instrument": "SZ123064",
+      "display_rank": 3,
+      "final_score": 0.963,
+      "source_strategies": [
+        "cb_batch_15",
+        "cb_batch_27"
+      ],
+      "source_scores": {
+        "cb_batch_15": 0.963,
+        "cb_batch_27": 0.953
+      }
+    },
+    {
+      "instrument": "SZ127025",
+      "display_rank": 4,
+      "final_score": 0.954,
+      "source_strategies": [
+        "cb_batch_15",
+        "cb_batch_27"
+      ],
+      "source_scores": {
+        "cb_batch_15": 0.954,
+        "cb_batch_27": 0.944
+      }
+    },
+    {
+      "instrument": "SZ127017",
+      "display_rank": 5,
+      "final_score": 0.945,
+      "source_strategies": [
+        "cb_batch_15",
+        "cb_batch_27"
+      ],
+      "source_scores": {
+        "cb_batch_15": 0.945,
+        "cb_batch_27": 0.935
+      }
+    },
+    {
+      "instrument": "SH110073",
+      "display_rank": 6,
+      "final_score": 0.936,
+      "source_strategies": [
+        "cb_batch_15",
+        "cb_batch_27"
+      ],
+      "source_scores": {
+        "cb_batch_15": 0.936,
+        "cb_batch_27": 0.926
+      }
+    },
+    {
+      "instrument": "SZ128134",
+      "display_rank": 7,
+      "final_score": 0.927,
+      "source_strategies": [
+        "cb_batch_15",
+        "cb_batch_27"
+      ],
+      "source_scores": {
+        "cb_batch_15": 0.927,
+        "cb_batch_27": 0.917
+      }
+    },
+    {
+      "instrument": "SH118057",
+      "display_rank": 8,
+      "final_score": 0.918,
+      "source_strategies": [
+        "cb_batch_15",
+        "cb_batch_27"
+      ],
+      "source_scores": {
+        "cb_batch_15": 0.918,
+        "cb_batch_27": 0.908
+      }
+    }
+  ]
+}
